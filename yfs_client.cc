@@ -151,8 +151,38 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
      * after create file or dir, you must remember to modify the parent infomation.
      */
 
+    // mode should be ignored
 
+    printf("create %s\n", name);
+    std::string content;
+    bool found;
 
+    lookup(parent, name, found, ino_out);
+    if (found) {
+        r = EXIST;
+        goto release;
+    }
+
+    if (ec->create(extent_protocol::T_FILE, ino_out) != extent_protocol::OK) {
+        printf("error creating file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    ec->get(parent, content);
+    printf("  create before:");
+    for (int i = 0; i < content.size(); i++)
+        printf("%.2x", content[i]);
+    printf("\n");
+    content += std::string(name) + '\0';
+    content += filename(ino_out) + '\0';
+    printf("  create after:");
+    for (int i = 0; i < content.size(); i++)
+        printf("%.2x", content[i]);
+    printf("\n");
+    ec->put(parent, content);
+
+release:
     return r;
 }
 
@@ -181,8 +211,33 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
      * you should design the format of directory content.
      */
 
-    
+    printf("lookup %s\n", name);
+    std::list<dirent> entries;
+    dirent entry;
+    found = false;
 
+    r = readdir(parent, entries);
+    if (r != OK)
+        goto release;
+
+    printf("  lookup input name:");
+    for (int i = 0; name[i] != '\0'; i++)
+        printf("%.2x", name[i]);
+    printf("\n");
+    for (std::list<dirent>::iterator iter = entries.begin(); iter != entries.end(); ++iter) {
+        printf("  lookup search iter:");
+        for (int i = 0; i < iter->name.size(); i++)
+            printf("%.2x", iter->name[i]);
+        printf("\n");
+        if (iter->name == std::string(name)) {
+            found = true;
+            ino_out = iter->inum;
+            goto release;
+        }
+    }
+
+release:
+    printf("lookup return %d, found:%d, ino_out:%d\n", r, found, ino_out);
     return r;
 }
 
@@ -197,22 +252,22 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
      * and push the dirents to the list.
      */
 
-    printf("readdir %016llx\n", inum);
+    printf("readdir %016llx\n", dir);
     std::string content;
+    std::string name;
+    std::string index;
+    dirent entry;
 
     // not necessary to check dir is a directory
     // it would be checked in fuse.cc before invoking this method
 
-    if (ec->get(inum, content) != extent_protocol::OK) {
+    if (ec->get(dir, content) != extent_protocol::OK) {
         printf("error getting content\n");
         r = IOERR;
         goto release;
     }
 
-    std::string name;
-    std::string index;
-    struct dirent entry;
-    for (int i = 0; i < content.size(); i++) {
+    for (int i = 0; i < content.size();) {
         for (; i < content.size(); i++) {
             if (content[i] != '\0')
                 name.push_back(content[i]);
@@ -231,12 +286,21 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
         }
         entry.name = name;
         entry.inum = n2i(index);
+        printf("  readdir name:");
+        for (int i = 0; i < name.size(); i++)
+            printf("%.2x", name[i]);
+        printf("\n");
+        printf("  readdir inum:");
+        for (int i = 0; i < index.size(); i++)
+            printf("%.2x", index[i]);
+        printf("\n");
         list.push_back(entry);
         name.clear();
         index.clear();
     }
 
 release:
+    printf("readdir return %d\n", r);
     return r;
 }
 
