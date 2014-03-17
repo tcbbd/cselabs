@@ -9,6 +9,12 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+// Allowed characters in filenames:
+// All bytes except NUL('\0') and '/'
+// Directory entry looks like this: name\0inum\0
+// where inum is stored as plain text(i.e. ASCII code)
+// instead of binary word
+
 yfs_client::yfs_client()
 {
     ec = new extent_client();
@@ -145,6 +151,8 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
      * after create file or dir, you must remember to modify the parent infomation.
      */
 
+
+
     return r;
 }
 
@@ -173,6 +181,8 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
      * you should design the format of directory content.
      */
 
+    
+
     return r;
 }
 
@@ -187,6 +197,46 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
      * and push the dirents to the list.
      */
 
+    printf("readdir %016llx\n", inum);
+    std::string content;
+
+    // not necessary to check dir is a directory
+    // it would be checked in fuse.cc before invoking this method
+
+    if (ec->get(inum, content) != extent_protocol::OK) {
+        printf("error getting content\n");
+        r = IOERR;
+        goto release;
+    }
+
+    std::string name;
+    std::string index;
+    struct dirent entry;
+    for (int i = 0; i < content.size(); i++) {
+        for (; i < content.size(); i++) {
+            if (content[i] != '\0')
+                name.push_back(content[i]);
+            else {
+                i++;
+                break;
+            }
+        }
+        for (; i < content.size(); i++) {
+            if (content[i] != '\0')
+                index.push_back(content[i]);
+            else {
+                i++;
+                break;
+            }
+        }
+        entry.name = name;
+        entry.inum = n2i(index);
+        list.push_back(entry);
+        name.clear();
+        index.clear();
+    }
+
+release:
     return r;
 }
 
