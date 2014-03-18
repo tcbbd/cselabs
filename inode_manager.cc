@@ -1,5 +1,7 @@
 #include "inode_manager.h"
 
+#define DEBUG
+
 // First data block
 #define DBLOCK (BLOCK_NUM / BPB + INODE_NUM + 4)
 
@@ -288,6 +290,8 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
 
   bm->read_block(IBLOCK(inum, bm->sb.nblocks), buf);
   ino = (struct inode*) buf;
+  ino->atime = time(NULL);
+  bm->write_block(IBLOCK(inum. bm->sb.nblocks), buf);
 
   if (ino->size == 0)
     return;
@@ -295,7 +299,7 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
   file = (char *) malloc(ino->size);
   *buf_out = file;
 
-  printf("  im.read : size = %d\n", ino->size);
+  printf("\tim.read : size = %d\n", ino->size);
 
   // direct blocks
   rest_size = ino->size;
@@ -303,10 +307,12 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
     if (rest_size > 0) {
       bm->read_block(ino->blocks[i], buf_file);
       memcpy(file + i * BLOCK_SIZE, buf_file, MIN(BLOCK_SIZE, rest_size));
+#ifdef DEBUG
       printf("  im.read: %dth block, block num = %d\n  im.read: block content:", i, ino->blocks[i]);
       for (int j = 0; j < MIN(BLOCK_SIZE, rest_size); j++)
           printf("%c", buf_file[j]);
       printf("\n");
+#endif
       rest_size -= BLOCK_SIZE;
     }
     else
@@ -320,10 +326,12 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
     if (rest_size > 0) {
       bm->read_block(blocks[i], buf_file);
       memcpy(file + (NDIRECT + i) * BLOCK_SIZE, buf_file, MIN(BLOCK_SIZE, rest_size));
+#ifdef DEBUG
       printf("  im.read: %dth block, block num = %d\n  im.read: block content:", i + NDIRECT, blocks[i]);
       for (int j = 0; j < MIN(BLOCK_SIZE, rest_size); j++)
           printf("%c", buf_file[j]);
       printf("\n");
+#endif
       rest_size -= BLOCK_SIZE;
     }
     else
@@ -364,13 +372,16 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
 
   bm->read_block(IBLOCK(inum, bm->sb.nblocks), buf_ino);
   ino = (struct inode*) buf_ino;
+  ino->mtime = time(NULL);
+  if (size != ino->size)
+      ino->ctime = ino->mtime;
   if (ino->size == 0)
     org_blkcount = -1;
   else
     org_blkcount = ((int)(ino->size) - 1) / BLOCK_SIZE;
   new_blkcount = (size - 1) / BLOCK_SIZE;
 
-  printf("orgsize: %u, newsize: %d, orgblk: %d, newblk: %d\n", ino->size, size, org_blkcount, new_blkcount);
+  printf("\torgsize: %u, newsize: %d, orgblk: %d, newblk: %d\n", ino->size, size, org_blkcount, new_blkcount);
 
   // direct blocks
   rest_size = size;
@@ -381,10 +392,12 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
       // larger than original file
       if (blk > org_blkcount)
         ino->blocks[blk] = bm->alloc_block();
+#ifdef DEBUG
       printf("  im.write: %dth block, block num = %d, rest size = %d\n  im.write: block content:", blk, ino->blocks[blk], rest_size);
       for (int j = 0; j < MIN(BLOCK_SIZE, rest_size + BLOCK_SIZE); j++)
           printf("%c", buf_file[j]);
       printf("\n");
+#endif
       bm->write_block(ino->blocks[blk], buf_file);
     }
     // smaller than original file
@@ -405,10 +418,12 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
       // larget than original file
       if (blk > org_blkcount)
         blocks[blk - NDIRECT] = bm->alloc_block();
+#ifdef DEBUG
       printf("  im.write: %dth block, block num = %d, rest size = %d\n  im.write: block content:", blk, blocks[blk - NDIRECT], rest_size);
       for (int j = 0; j < MIN(BLOCK_SIZE, rest_size + BLOCK_SIZE); j++)
           printf("%c", buf_file[j]);
       printf("\n");
+#endif
       bm->write_block(blocks[blk - NDIRECT], buf_file);
     }
     // smaller than original file

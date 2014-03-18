@@ -15,10 +15,11 @@
 // where inum is stored as plain text(i.e. ASCII code)
 // instead of binary word
 
+#define DEBUG
+
 yfs_client::yfs_client()
 {
     ec = new extent_client();
-
 }
 
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
@@ -202,6 +203,30 @@ yfs_client::mkdir(inum parent, const char *name, mode_t mode, inum &ino_out)
      * after create file or dir, you must remember to modify the parent infomation.
      */
 
+    // mode should be ignored
+
+    printf("mkdir %s\n", name);
+    std::string content;
+    bool found;
+
+    lookup(parent, name, found, ino_out);
+    if (found) {
+        r = EXIST;
+        goto release;
+    }
+
+    if (ec->create(extent_protocol::T_DIR, ino_out) != extent_protocol::OK) {
+        printf("error creating directory\n");
+        r = IOERR;
+        goto release;
+    }
+
+    ec->get(parent, content);
+    content += std::string(name) + '\0';
+    content += filename(ino_out) + '\0';
+    ec->put(parent, content);
+
+release:
     return r;
 }
 
@@ -310,11 +335,13 @@ yfs_client::read(inum ino, size_t size, off_t off, std::string &data)
         goto release;
     }
 
+#ifdef DEBUG
     printf("read content:\n");
     for (int i = 0; i < content.size(); i++) {
         printf("%c", content[i]);
     }
     printf("\n");
+#endif
     // less than size bytes available
     if(off + size > content.size())
         data = content.substr(off);
@@ -347,11 +374,13 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
         goto release;
     }
 
+#ifdef DEBUG
     printf("write before:\n");
     for (int i = 0; i < content.size(); i++) {
         printf("%c", content[i]);
     }
     printf("\n");
+#endif
     // fill "holes" with '\0's
     if (off >= content.size())
         bytes_written = size + off - content.size();
@@ -361,12 +390,14 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
         content.resize(off + size, '\0');
     content.replace(off, size, data, size);
     ec->put(ino, content);
+#ifdef DEBUG
     printf("write after:\n");
     for (int i = 0; i < content.size(); i++) {
         printf("%c", content[i]);
     }
     printf("\n");
-    printf("write %d bytes\n", bytes_written);
+#endif
+    printf("write %lu bytes\n", bytes_written);
 
 release:
     return r;
@@ -382,6 +413,36 @@ int yfs_client::unlink(inum parent,const char *name)
      * and update the parent directory content.
      */
 
+    printf("unlink %s\n", name);
+    std::string content;
+    bool found;
+    inum ino_out;
+    size_t pos, len;
+
+    lookup(parent, name, found, ino_out);
+    if (!found) {
+        r = NOENT;
+        goto release;
+    }
+
+    if (ec->remove(ino_out) != extent_protocol::OK) {
+        printf("error deleting file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    ec->get(parent, content);
+    pos = content.find(name);
+    len = 0;
+    while (content[pos + len] != '\0') { len++; }
+    len++;
+    while (content[pos + len] != '\0') { len++; }
+    len++;
+    content.erase(pos, len);
+    printf("unlink: pos = %lu, len = %lu\n", pos, len);
+    ec->put(parent, content);
+
+release:
     return r;
 }
 
