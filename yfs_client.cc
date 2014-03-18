@@ -15,7 +15,7 @@
 // where inum is stored as plain text(i.e. ASCII code)
 // instead of binary word
 
-#define DEBUG
+//#define DEBUG
 
 yfs_client::yfs_client()
 {
@@ -60,7 +60,7 @@ yfs_client::isfile(inum inum)
         printf("isfile: %lld is a file\n", inum);
         return true;
     } 
-    printf("isfile: %lld is a dir\n", inum);
+    printf("isfile: %lld is a dir or a symlink\n", inum);
     return false;
 }
 /** Your code here for Lab...
@@ -72,8 +72,37 @@ yfs_client::isfile(inum inum)
 bool
 yfs_client::isdir(inum inum)
 {
-    // Oops! is this still correct when you implement symlink?
-    return ! isfile(inum);
+    extent_protocol::attr a;
+
+    if (ec->getattr(inum, a) != extent_protocol::OK) {
+        printf("error getting attr\n");
+        return false;
+    }
+
+    if (a.type == extent_protocol::T_DIR) {
+        printf("isdir: %lld is a dir\n", inum);
+        return true;
+    } 
+    printf("isdir: %lld is a file or a symlink\n", inum);
+    return false;
+}
+
+bool
+yfs_client::issymlink(inum inum)
+{
+    extent_protocol::attr a;
+
+    if (ec->getattr(inum, a) != extent_protocol::OK) {
+        printf("error getting attr\n");
+        return false;
+    }
+
+    if (a.type == extent_protocol::T_SYMLINK) {
+        printf("issymlink: %lld is a symlink\n", inum);
+        return true;
+    } 
+    printf("issymlink: %lld is a file or a dir\n", inum);
+    return false;
 }
 
 int
@@ -112,6 +141,28 @@ yfs_client::getdir(inum inum, dirinfo &din)
     din.atime = a.atime;
     din.mtime = a.mtime;
     din.ctime = a.ctime;
+
+release:
+    return r;
+}
+
+int
+yfs_client::getsymlink(inum inum, symlinkinfo &sin)
+{
+    int r = OK;
+
+    printf("getsymlink %016llx\n", inum);
+    extent_protocol::attr a;
+    if (ec->getattr(inum, a) != extent_protocol::OK) {
+        r = IOERR;
+        goto release;
+    }
+
+    sin.atime = a.atime;
+    sin.mtime = a.mtime;
+    sin.ctime = a.ctime;
+    sin.size = a.size;
+    printf("getsymlink %016llx -> sz %llu\n", inum, sin.size);
 
 release:
     return r;
@@ -446,3 +497,49 @@ release:
     return r;
 }
 
+int yfs_client::symlink(inum parent, const char *name, const char *link, inum &ino_out)
+{
+    int r = OK;
+
+    printf("symlink %s -> %s\n", name, link);
+
+    std::string content;
+    bool found;
+    size_t bytes_written;
+
+    lookup(parent, name, found, ino_out);
+    if (found) {
+        r = EXIST;
+        goto release;
+    }
+
+    if (ec->create(extent_protocol::T_SYMLINK, ino_out) != extent_protocol::OK) {
+        printf("error symlinking file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    ec->get(parent, content);
+    content += std::string(name) + '\0';
+    content += filename(ino_out) + '\0';
+    ec->put(parent, content);
+
+    write(ino_out, strlen(link), 0, link, bytes_written);
+
+release:
+    return r;
+}
+
+int yfs_client::readlink(inum ino, std::string &data)
+{
+    int r = OK;
+
+    printf("readlink %016llx\n", ino);
+
+    if (ec->get(ino, data) != extent_protocol::OK) {
+        printf("error reading file\n");
+        r = IOERR;
+    }
+
+    return r;
+}

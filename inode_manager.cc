@@ -1,6 +1,6 @@
 #include "inode_manager.h"
 
-#define DEBUG
+//#define DEBUG
 
 // First data block
 #define DBLOCK (BLOCK_NUM / BPB + INODE_NUM + 4)
@@ -291,7 +291,7 @@ inode_manager::read_file(uint32_t inum, char **buf_out, int *size)
   bm->read_block(IBLOCK(inum, bm->sb.nblocks), buf);
   ino = (struct inode*) buf;
   ino->atime = time(NULL);
-  bm->write_block(IBLOCK(inum. bm->sb.nblocks), buf);
+  bm->write_block(IBLOCK(inum, bm->sb.nblocks), buf);
 
   if (ino->size == 0)
     return;
