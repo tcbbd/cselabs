@@ -137,6 +137,19 @@ yfs_client::setattr(inum ino, size_t size)
      * according to the size (<, =, or >) content length.
      */
 
+    printf("setattr %016llx sz->%lu\n", ino, size);
+    std::string content;
+
+    if (ec->get(ino, content) != extent_protocol::OK) {
+        printf("error reading file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    content.resize(size, '\0');
+    ec->put(ino, content);
+
+release:
     return r;
 }
 
@@ -170,16 +183,8 @@ yfs_client::create(inum parent, const char *name, mode_t mode, inum &ino_out)
     }
 
     ec->get(parent, content);
-    printf("  create before:");
-    for (int i = 0; i < content.size(); i++)
-        printf("%.2x", content[i]);
-    printf("\n");
     content += std::string(name) + '\0';
     content += filename(ino_out) + '\0';
-    printf("  create after:");
-    for (int i = 0; i < content.size(); i++)
-        printf("%.2x", content[i]);
-    printf("\n");
     ec->put(parent, content);
 
 release:
@@ -220,15 +225,7 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
     if (r != OK)
         goto release;
 
-    printf("  lookup input name:");
-    for (int i = 0; name[i] != '\0'; i++)
-        printf("%.2x", name[i]);
-    printf("\n");
     for (std::list<dirent>::iterator iter = entries.begin(); iter != entries.end(); ++iter) {
-        printf("  lookup search iter:");
-        for (int i = 0; i < iter->name.size(); i++)
-            printf("%.2x", iter->name[i]);
-        printf("\n");
         if (iter->name == std::string(name)) {
             found = true;
             ino_out = iter->inum;
@@ -237,7 +234,6 @@ yfs_client::lookup(inum parent, const char *name, bool &found, inum &ino_out)
     }
 
 release:
-    printf("lookup return %d, found:%d, ino_out:%d\n", r, found, ino_out);
     return r;
 }
 
@@ -286,21 +282,12 @@ yfs_client::readdir(inum dir, std::list<dirent> &list)
         }
         entry.name = name;
         entry.inum = n2i(index);
-        printf("  readdir name:");
-        for (int i = 0; i < name.size(); i++)
-            printf("%.2x", name[i]);
-        printf("\n");
-        printf("  readdir inum:");
-        for (int i = 0; i < index.size(); i++)
-            printf("%.2x", index[i]);
-        printf("\n");
         list.push_back(entry);
         name.clear();
         index.clear();
     }
 
 release:
-    printf("readdir return %d\n", r);
     return r;
 }
 
@@ -314,6 +301,28 @@ yfs_client::read(inum ino, size_t size, off_t off, std::string &data)
      * note: read using ec->get().
      */
 
+    printf("read %016llx size:%lu offset:%ld\n", ino, size, off);
+    std::string content;
+
+    if (ec->get(ino, content) != extent_protocol::OK) {
+        printf("error reading file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    printf("read content:\n");
+    for (int i = 0; i < content.size(); i++) {
+        printf("%c", content[i]);
+    }
+    printf("\n");
+    // less than size bytes available
+    if(off + size > content.size())
+        data = content.substr(off);
+    else
+        data = content.substr(off, size);
+    printf("read %lu bytes\n", data.size());
+
+release:
     return r;
 }
 
@@ -328,7 +337,38 @@ yfs_client::write(inum ino, size_t size, off_t off, const char *data,
      * note: write using ec->put().
      * when off > length of original file, fill the holes with '\0'.
      */
+    
+    printf("write %016llx size:%lu offset:%ld\nwrite content:%s\n", ino, size, off, data);
+    std::string content;
 
+    if (ec->get(ino, content) != extent_protocol::OK) {
+        printf("error reading file\n");
+        r = IOERR;
+        goto release;
+    }
+
+    printf("write before:\n");
+    for (int i = 0; i < content.size(); i++) {
+        printf("%c", content[i]);
+    }
+    printf("\n");
+    // fill "holes" with '\0's
+    if (off >= content.size())
+        bytes_written = size + off - content.size();
+    else
+        bytes_written = size;
+    if (off + size > content.size())
+        content.resize(off + size, '\0');
+    content.replace(off, size, data, size);
+    ec->put(ino, content);
+    printf("write after:\n");
+    for (int i = 0; i < content.size(); i++) {
+        printf("%c", content[i]);
+    }
+    printf("\n");
+    printf("write %d bytes\n", bytes_written);
+
+release:
     return r;
 }
 
