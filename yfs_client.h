@@ -41,6 +41,10 @@ class yfs_client {
   static std::string filename(inum);
   static inum n2i(std::string);
 
+  int lookup_nonlock(inum, const char *, bool &, inum &);
+  int readdir_nonlock(inum, std::list<dirent> &);
+  int write_nonlock(inum, size_t, off_t, const char *, size_t &);
+
  public:
   yfs_client(std::string, std::string);
 

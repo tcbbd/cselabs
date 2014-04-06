@@ -13,8 +13,7 @@ class lock_server {
 
  protected:
   int nacquire;
-  pthread_mutex_t lock_mutex;
-  pthread_cond_t lock_cond;
+  std::map<lock_protocol::lockid_t, std::pair<pthread_mutex_t, pthread_cond_t> > mutexes;
   //true for locked, false for free
   std::map<lock_protocol::lockid_t, bool> lock_states;
 
