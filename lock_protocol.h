@@ -5,7 +5,7 @@
 
 #include "rpc.h"
 
-#define LAB_DEBUG
+//#define LAB_DEBUG
 
 #ifdef LAB_DEBUG
 #define log(args...) do { printf(args); } while (0);
