@@ -5,6 +5,14 @@
 
 #include "rpc.h"
 
+#define LAB_DEBUG
+
+#ifdef LAB_DEBUG
+#define log(args...) do { printf(args); } while (0);
+#else
+#define log(args...)
+#endif
+
 class lock_protocol {
  public:
   enum xxstatus { OK, RETRY, RPCERR, NOENT, IOERR };

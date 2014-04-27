@@ -35,7 +35,8 @@ lock_client_cache::lock_client_cache(std::string xdst,
 lock_protocol::status
 lock_client_cache::acquire(lock_protocol::lockid_t lid)
 {
-    printf("Acquire %llu\n", lid);
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire begin\n",
+            lid, id.data(), pthread_self());
     //lock's corresponding mutex hasn't been initialized
     pthread_mutex_lock(initial_mutex);
     if (lock_mutexes.find(lid) == lock_mutexes.end()) {
@@ -52,30 +53,68 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
     pthread_mutex_lock(&lock_mutexes[lid].first);
     if (lock_states.find(lid) == lock_states.end()) {
         //know nothing about the lock, try to acquire through RPC
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                " state NOT EXIST -> NONE, do rpc call\n", lid, id.data(), pthread_self());
         lock_states[lid] = NONE;
         acquire = true;
     }
     else {
         switch (lock_states[lid]) {
         case FREE:
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                    " state FREE -> LOCKED\n", lid, id.data(), pthread_self());
             lock_states[lid] = LOCKED;
             break;
         case NONE:
         case LOCKED:
         case ACQUIRING:
-        case RELEASING:
-            while (lock_states[lid] != FREE && lock_states[lid] != RELEASED) {
+        case RETRIED: case REVOKED: case REVOKED_RETRIED:
+        case RELEASING: case RELEASING_RETRYING:
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu,"
+                    " acquire, start waiting\n", lid, id.data(), pthread_self());
+            while (lock_states[lid] != FREE && lock_states[lid] != RELEASED &&
+                    lock_states[lid] != PRE_RELEASING &&
+                    lock_states[lid] != PRE_RELEASING_RETRYING) {
                 pthread_cond_wait(&lock_mutexes[lid].second, &lock_mutexes[lid].first);
             }
-            if (lock_states[lid] == FREE)
+            if (lock_states[lid] == FREE) {
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " awaken, state FREE -> LOCKED\n", lid, id.data(), pthread_self());
                 lock_states[lid] = LOCKED;
+            }
             else if (lock_states[lid] == RELEASED) {
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire, awaken,"
+                        " state RELEASED -> NONE, do rpc call\n", lid, id.data(), pthread_self());
                 lock_states[lid] = NONE;
                 acquire = true;
             }
+            else if (lock_states[lid] == PRE_RELEASING) {
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire, awaken,"
+                        " state PRE_RELEASING -> RELEASING\n", lid, id.data(), pthread_self());
+                lock_states[lid] = RELEASING;
+            }
+            else if (lock_states[lid] == PRE_RELEASING_RETRYING) {
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " awaken, state PRE_RELEASING_RETRYING -> RELEASING_RETRYING\n",
+                        lid, id.data(), pthread_self());
+                lock_states[lid] = RELEASING_RETRYING;
+            }
+            break;
+        case PRE_RELEASING_RETRYING:
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                    " state PRE_RELEASING_RETRYING -> RELEASING_RETRYING\n",
+                    lid, id.data(), pthread_self());
+            lock_states[lid] = RELEASING_RETRYING;
+            break;
+        case PRE_RELEASING:
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                    " state PRE_RELEASING -> RELEASING\n", lid, id.data(), pthread_self());
+            lock_states[lid] = RELEASING;
             break;
         case RELEASED:
             //acquire after released, try to acquire through RPC
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                    " state RELEASED -> NONE, do rpc call\n", lid, id.data(), pthread_self());
             lock_states[lid] = NONE;
             acquire = true;
             break;
@@ -87,105 +126,165 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
     while (acquire) {
         acquire = false;
         int r;
-        printf("acquire rpc call\n");
-        ret = cl->call(lock_protocol::acquire, cl->id(), lid, id, r);
-        printf("acquire rpc call done\n");
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu,"
+                " acquire, acquire RPC call begin\n", lid, id.data(), pthread_self());
+        ret = cl->call(lock_protocol::acquire, lid, id, r);
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu,"
+                " acquire, acquire RPC call end\n", lid, id.data(), pthread_self());
         pthread_mutex_lock(&lock_mutexes[lid].first);
         if (ret == lock_protocol::OK) {
             switch(lock_states[lid]) {
             case NONE:
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond OK, state NONE -> LOCKED\n",
+                        lid, id.data(), pthread_self());
                 lock_states[lid] = LOCKED;
                 break;
-            case RELEASING:
-                //it's possible that a revoke arrive before the OK response, which
-                //causes state to be changed to RELEASING. But we should do nothing
-                //with this case.
+            case REVOKED:
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond OK, state REVOKED -> RELEASING\n",
+                        lid, id.data(), pthread_self());
+                lock_states[lid] = RELEASING;
+                break;
             default:
-                //impossible to be in FREE, LOCKED, ACQUIRING or RELEASED state
+                //impossible to be in such states
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond OK, state ERROR!\n",
+                        lid, id.data(), pthread_self());
                 break;
             }
         }
         else if (ret == lock_protocol::RETRY) {
             switch(lock_states[lid]) {
-            case FREE:
-                //one can skip ACQUIRING state and straightly enter FREE state when
-                //retry arrive before RETRY response
-                lock_states[lid] = LOCKED;
-                break;
-            case RELEASED:
-                //it's possible that a revoke arrive before the RETRY response, which
-                //causes state to be chaned to RELEASED. Try to acquire through RPC.
-                lock_states[lid] = NONE;
-                acquire = true;
-                break;
             case NONE:
+                //The order is correct
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond RETRY, state NONE -> ACQUIRING\n",
+                        lid, id.data(), pthread_self());
                 lock_states[lid] = ACQUIRING;
-            case LOCKED:
-                //one can skip ACQUIRING state and straightly enter FREE state
-                //(then he can be in LOCKED state) when retry arrive before
-                //RETRY response
-            case RELEASING:
-                //it's possible that a revoke arrive before the RETRY response, which
-                //causes state to be changed to RELEASING. We should wait for the owner
-                //thread to release.
-            case ACQUIRING:
-                //It's the most confusing case.
-                //NOTE that it's possible that before this RETRY response
-                //arrive, a retry arrived, and then a revoke, and then the lock
-                //had been released, finnally another acquire RPC call was made
-                //and the second RETRY response arrived. Now, the lock is in
-                //ACQUIRING state, with a second acquire and RETRY done.
-                //Actually, this can be further extended so that we can even
-                //recieve the first RETRY after many cycles of retry, revoke,
-                //acquire and RETRY, without awareness of what happened.
-                while (lock_states[lid] != FREE && lock_states[lid] != RELEASED) {
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond RETRY, state ACQUIRING, start waiting\n",
+                        lid, id.data(), pthread_self());
+                while (lock_states[lid] != FREE && lock_states[lid] != RELEASED &&
+                        lock_states[lid] != PRE_RELEASING &&
+                        lock_states[lid] != PRE_RELEASING_RETRYING) {
                     pthread_cond_wait(&lock_mutexes[lid].second, &lock_mutexes[lid].first);
                 }
-                if (lock_states[lid] == FREE)
+                if (lock_states[lid] == FREE) {
+                    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                            " acquire RPC call respond RETRY, awaken, state FREE -> LOCKED\n",
+                            lid, id.data(), pthread_self());
                     lock_states[lid] = LOCKED;
+                }
                 else if (lock_states[lid] == RELEASED) {
+                    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                            " acquire RPC call respond RETRY, awaken, state RELEASED -> NONE,"
+                            " do rpc call\n", lid, id.data(), pthread_self());
                     lock_states[lid] = NONE;
                     acquire = true;
                 }
+                else if (lock_states[lid] == PRE_RELEASING) {
+                    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                            " acquire RPC call respond RETRY, awaken,"
+                            " state PRE_RELEASING -> RELEASING\n",
+                            lid, id.data(), pthread_self());
+                    lock_states[lid] = RELEASING;
+                }
+                else if (lock_states[lid] == PRE_RELEASING_RETRYING) {
+                    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                            " acquire RPC call respond RETRY, awaken,"
+                            " state PRE_RELEASING_RETRYING -> RELEASING_RETRYING\n",
+                            lid, id.data(), pthread_self());
+                    lock_states[lid] = RELEASING_RETRYING;
+                }
+                break;
+            case RETRIED:
+                //first a retry call, then RETRY response
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond RETRY, state RETRIED -> LOCKED\n",
+                        lid, id.data(), pthread_self());
+                lock_states[lid] = LOCKED;
+                break;
+            case REVOKED:
+                //first a revoke call, then RETRY response
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond RETRY, state REVOKED -> RELEASING_RETRYING\n",
+                        lid, id.data(), pthread_self());
+                lock_states[lid] = RELEASING_RETRYING;
+                break;
+            case REVOKED_RETRIED:
+                //first a retry call and a revoke call (can be in either
+                //order), then RETRY response
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond RETRY, state REVOKED_RETRIED -> RELEASING\n",
+                        lid, id.data(), pthread_self());
+                lock_states[lid] = RELEASING;
                 break;
             default:
+                //impossible to be in such states
+                log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                        " acquire RPC call respond OK, state ERROR!\n",
+                        lid, id.data(), pthread_self());
                 break;
             }
         }
         pthread_mutex_unlock(&lock_mutexes[lid].first);
     }
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire end\n",
+            lid, id.data(), pthread_self());
     return ret;
 }
 
 lock_protocol::status
 lock_client_cache::release(lock_protocol::lockid_t lid)
 {
-    printf("Release %llu\n", lid);
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release begin\n",
+            lid, id.data(), pthread_self());
     bool release = false;
     pthread_mutex_lock(&lock_mutexes[lid].first);
     switch (lock_states[lid]) {
     case LOCKED:
         //just free it and signal a thread to acquire the lock
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " state LOCKED -> FREE\n", lid, id.data(), pthread_self());
         lock_states[lid] = FREE;
         pthread_cond_signal(&lock_mutexes[lid].second);
         break;
+    case RELEASING_RETRYING:
+        //should wait until a retry call comes
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " state RELEASING_RETRYING, start waiting\n", lid, id.data(), pthread_self());
+        while (lock_states[lid] != RELEASING) {
+            pthread_cond_wait(&lock_mutexes[lid].second, &lock_mutexes[lid].first);
+        }
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " awaken, state RELEASING\n", lid, id.data(), pthread_self());
     case RELEASING:
         //tell the server we've released the previously holding lock
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " state RELEASING -> RELEASED, do rpc call\n", lid, id.data(), pthread_self());
         lock_states[lid] = RELEASED;
         pthread_cond_signal(&lock_mutexes[lid].second);
         release = true;
         break;
     default:
-        //if lock is already free, one should not release it again
-        //should not release when NONE, ACQUIRING or RELEASED, otherwise
-        //there is a logical error
+        //should not release in such state, it's a logical error
+        //(although one can release a FREE lock without side effect)
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " state ERROR!\n", lid, id.data(), pthread_self());
         break;
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;
-        cl->call(lock_protocol::release, cl->id(), lid, id, r);
+        cl->call(lock_protocol::release, lid, id, r);
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
+                " release RPC call end\n", lid, id.data(), pthread_self());
     }
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release end\n",
+            lid, id.data(), pthread_self());
     return lock_protocol::OK;
 }
 
@@ -193,44 +292,61 @@ rlock_protocol::status
 lock_client_cache::revoke_handler(lock_protocol::lockid_t lid, 
                                   int &)
 {
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke begin\n",
+            lid, id.data(), pthread_self());
     bool release = false;
     pthread_mutex_lock(&lock_mutexes[lid].first);
     switch(lock_states[lid]) {
     case FREE:
         //if free, release immedaitely
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state FREE -> RELEASED, do rpc call\n", lid, id.data(), pthread_self());
         lock_states[lid] = RELEASED;
         release = true;
         break;
     case NONE:
-        //a revoke can arrive before the OK response of acquire
-        //(the OK response takes so much time that some other client
-        //try to acquire the "ACQUIRED" lock which hasn't been acquired
-        //at this client!)
+        //revoke call before OK or RETRY response
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state NONE -> REVOKED\n", lid, id.data(), pthread_self());
+        lock_states[lid] = REVOKED;
+        break;
     case LOCKED:
+        //wait for the thread owning the lock to release
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state LOCKED -> RELEASING\n", lid, id.data(), pthread_self());
         lock_states[lid] = RELEASING;
         break;
+    case ACQUIRING:
+        //revoke call after RETRY response but before retry call
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state ACQUIRING -> PRE_RELEASING_RETRYING\n", lid, id.data(), pthread_self());
+        lock_states[lid] = PRE_RELEASING_RETRYING;
+        pthread_cond_signal(&lock_mutexes[lid].second);
+        break;
+    case RETRIED:
+        //first a retry call, then a revoke call, all before RETRY response
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state RETRIED -> REVOKED_RETRIED\n", lid, id.data(), pthread_self());
+        lock_states[lid] = REVOKED_RETRIED;
+        break;
     default:
-        //a revoke when ACQUIRING is impossible, should not happen at all.
-        //(because one must receive a RETRY to enter ACQUIRING state, and then
-        //waiting for a retry from server. In the code of server_cache, the
-        //following revoke must happen after the preceding retry returned)
-        //
-        //a revoke when RELEASING is impossible, should not happen at all.
-        //(because server won't send revoke to the client twice)
-        //
-        //a revoke when RELEASED is impossible, should not happen at all.
-        //(because at server side, either the client has't released the lock
-        //(release hasn't arrived server yet) or the client has released but
-        //hasn't reaquire the lock yet, the server won't revoke the client when
-        //in such state )
+        //otherwise a revoke is impossible
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " state ERROR!\n", lid, id.data(), pthread_self());
         break;
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;
-        cl->call(lock_protocol::release, cl->id(), lid, id, r);
+        cl->call(lock_protocol::release, lid, id, r);
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
+                " release RPC call end\n", lid, id.data(), pthread_self());
     }
     int ret = rlock_protocol::OK;
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke end\n",
+            lid, id.data(), pthread_self());
     return ret;
 }
 
@@ -238,27 +354,55 @@ rlock_protocol::status
 lock_client_cache::retry_handler(lock_protocol::lockid_t lid, 
                                  int &)
 {
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry begin\n",
+            lid, id.data(), pthread_self());
     pthread_mutex_lock(&lock_mutexes[lid].first);
     switch (lock_states[lid]) {
     case NONE:
-        //a retry can arrive before the RETRY response of acquire
-        //(for a relatively long RETRY response, see preceding explanation
-        //of NONE in revoke)
+        //retry call before RETRY response
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state NONE -> RETRIED\n", lid, id.data(), pthread_self());
+        lock_states[lid] = RETRIED;
+        break;
     case ACQUIRING:
+        //the correct order, retry call after RETRY response
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state ACQUIRING -> FREE\n", lid, id.data(), pthread_self());
         lock_states[lid] = FREE;
         pthread_cond_signal(&lock_mutexes[lid].second);
         break;
+    case REVOKED:
+        //first a revoke call, then retry call, both befor RETRY response
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state REVOKED -> REVOKED_RETRIED\n", lid, id.data(), pthread_self());
+        lock_states[lid] = REVOKED_RETRIED;
+        break;
+    case RELEASING_RETRYING:
+        //first revoke call and RETRY response (can be in either order), and
+        //then retry call
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state RELEASING_RETRYING -> RELEASING\n", lid, id.data(), pthread_self());
+        lock_states[lid] = RELEASING;
+        //signal every thread so that we can inform the thread waiting for release
+        pthread_cond_broadcast(&lock_mutexes[lid].second);
+        break;
+    case PRE_RELEASING_RETRYING:
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state PRE_RELEASING_RETRYING -> PRE_RELEASING\n",
+                lid, id.data(), pthread_self());
+        lock_states[lid] = PRE_RELEASING;
+        pthread_cond_signal(&lock_mutexes[lid].second);
+        break;
     default:
-        //a retry when FREE, LOCKED or RELEASING is impossible, should not happen at all.
-        //(because it means the client owns the lock)
-        //
-        //a retry when RELEASED is impossible, should not happen at all.
-        //(because to make an acquire call to server, the client must enter
-        //NONE state at first)
+        //otherwise a retry call is impossible
+        log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry,"
+                " state ERROR!\n", lid, id.data(), pthread_self());
         break;
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     int ret = rlock_protocol::OK;
+    log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, retry end\n",
+            lid, id.data(), pthread_self());
     return ret;
 }
 

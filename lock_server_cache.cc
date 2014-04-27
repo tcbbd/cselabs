@@ -19,7 +19,7 @@ lock_server_cache::lock_server_cache()
 int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
                                int &)
 {
-    printf("Acquire lockid:%llu, clientid: %s\n", lid, id.data());
+    log("Lock ID: %llu, Client ID: %s, acquire begin\n", lid, id.data());
     //lock's corresponding mutex hasn't been initialized
     pthread_mutex_lock(&initial_mutex);
     if (lock_mutexes.find(lid) == lock_mutexes.end()) {
@@ -35,22 +35,28 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
     pthread_mutex_lock(&lock_mutexes[lid]);
     if (locks.find(lid) == locks.end()) {
         //it's the first time this lock required by some client
+        log("Lock ID: %llu, Client ID: %s, acquire, response OK\n", lid, id.data());
         locks[lid] = new lockinfo_t(ACQUIRED, id);
         ret = lock_protocol::OK;
     }
     else {
         if (locks[lid]->state == FREE) {
             //actually, this should not happen
+            log("Lock ID: %llu, Client ID: %s, acquire, response OK\n", lid, id.data());
             locks[lid]->state = ACQUIRED;
             locks[lid]->client_id = id;
             ret = lock_protocol::OK;
         }
         else if (locks[lid]->state == ACQUIRED) {
+            log("Lock ID: %llu, Client ID: %s, acquire, response ACQUIRED\n", lid, id.data());
             locks[lid]->waiting_clients.push(id);
             ret = lock_protocol::RETRY;
             //if no one else waiting, revoke the lock and give it to the client identified by id
-            if(locks[lid]->waiting_clients.empty())
+            if(locks[lid]->waiting_clients.size() == 1) {
+                log("Lock ID: %llu, Client ID: %s, acquire, do rpc call\n", lid, id.data());
                 revoke = true;
+                revoke_cl = locks[lid]->client_id;
+            }
         }
     }
     pthread_mutex_unlock(&lock_mutexes[lid]);
@@ -58,9 +64,12 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
         handle h(revoke_cl);
         rpcc *cl = h.safebind();
         int r;
+        log("Lock ID: %llu, Client ID: %s, acquire, revoke RPC call begin\n", lid, id.data());
         if (cl != NULL)
-            cl->call(rlock_protocol::revoke, cl->id(), lid, r);
+            cl->call(rlock_protocol::revoke, lid, r);
+        log("Lock ID: %llu, Client ID: %s, acquire, revoke RPC call end\n", lid, id.data());
     }
+    log("Lock ID: %llu, Client ID: %s, acquire end\n", lid, id.data());
     return ret;
 }
 
@@ -68,6 +77,7 @@ int
 lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
          int &r)
 {
+    log("Lock ID: %llu, Client ID: %s, release begin\n", lid, id.data());
     lock_protocol::status ret;
     bool retry = false;
     bool revoke = false;
@@ -84,19 +94,28 @@ lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
             retry_cl = locks[lid]->client_id = locks[lid]->waiting_clients.front();
             locks[lid]->waiting_clients.pop();
             retry = true;
-            if (!locks[lid]->waiting_clients.empty())
+            if (!locks[lid]->waiting_clients.empty()) {
                 revoke = true;
+                log("Lock ID: %llu, Client ID: %s, release, do revoke call\n", lid, id.data());
+            }
+            log("Lock ID: %llu, Client ID: %s, release, give lock to Client %s\n",
+                    lid, id.data(), retry_cl.data());
         }
     }
     pthread_mutex_unlock(&lock_mutexes[lid]);
     if (retry) {
         handle h(retry_cl);
         rpcc *cl = h.safebind();
+        log("Lock ID: %llu, Client ID: %s, release, retry RPC call begin\n", lid, id.data());
         if (cl != NULL)
-            cl->call(rlock_protocol::retry, cl->id(), lid, r);
+            cl->call(rlock_protocol::retry, lid, r);
+        log("Lock ID: %llu, Client ID: %s, release, retry RPC call end\n", lid, id.data());
+        log("Lock ID: %llu, Client ID: %s, release, revoke RPC call begin\n", lid, id.data());
         if (cl != NULL && revoke)
-            cl->call(rlock_protocol::revoke, cl->id(), lid, r);
+            cl->call(rlock_protocol::revoke, lid, r);
+        log("Lock ID: %llu, Client ID: %s, release, revoke RPC call end\n", lid, id.data());
     }
+    log("Lock ID: %llu, Client ID: %s, release end\n", lid, id.data());
     return ret;
 }
 
