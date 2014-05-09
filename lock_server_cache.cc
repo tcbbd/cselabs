@@ -48,7 +48,7 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
             ret = lock_protocol::OK;
         }
         else if (locks[lid]->state == ACQUIRED) {
-            log("Lock ID: %llu, Client ID: %s, acquire, response ACQUIRED\n", lid, id.data());
+            log("Lock ID: %llu, Client ID: %s, acquire, response RETRY\n", lid, id.data());
             locks[lid]->waiting_clients.push(id);
             ret = lock_protocol::RETRY;
             //if no one else waiting, revoke the lock and give it to the client identified by id
@@ -71,6 +71,19 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
     }
     log("Lock ID: %llu, Client ID: %s, acquire end\n", lid, id.data());
     return ret;
+}
+
+void *async_revoke(void *args) {
+    revoke_info_t *rev_info = (revoke_info_t *) args;
+    int r;
+    pthread_detach(pthread_self());
+    log("Lock ID: %llu, Client ID: %s, release, async revoke RPC call begin\n",
+            rev_info->lid, rev_info->id.data());
+    rev_info->cl->call(rlock_protocol::revoke, rev_info->lid, r);
+    log("Lock ID: %llu, Client ID: %s, release, async revoke RPC call end\n",
+            rev_info->lid, rev_info->id.data());
+    delete rev_info;
+    return NULL;
 }
 
 int 
@@ -110,10 +123,14 @@ lock_server_cache::release(lock_protocol::lockid_t lid, std::string id,
         if (cl != NULL)
             cl->call(rlock_protocol::retry, lid, r);
         log("Lock ID: %llu, Client ID: %s, release, retry RPC call end\n", lid, id.data());
-        log("Lock ID: %llu, Client ID: %s, release, revoke RPC call begin\n", lid, id.data());
-        if (cl != NULL && revoke)
-            cl->call(rlock_protocol::revoke, lid, r);
-        log("Lock ID: %llu, Client ID: %s, release, revoke RPC call end\n", lid, id.data());
+        if (cl != NULL && revoke) {
+            revoke_info_t *rev_info = new revoke_info_t;
+            rev_info->cl = cl;
+            rev_info->lid = lid;
+            rev_info->id = id;
+            pthread_t tid;
+            pthread_create(&tid, NULL, async_revoke, (void *) rev_info);
+        }
     }
     log("Lock ID: %llu, Client ID: %s, release end\n", lid, id.data());
     return ret;

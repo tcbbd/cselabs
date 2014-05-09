@@ -11,6 +11,11 @@
 #include "lock_server.h"
 #include "handle.h"
 
+struct revoke_info_t {
+    rpcc *cl;
+    lock_protocol::lockid_t lid;
+    std::string id;
+};
 
 class lock_server_cache {
  private:

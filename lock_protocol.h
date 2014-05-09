@@ -8,7 +8,7 @@
 //#define LAB_DEBUG
 
 #ifdef LAB_DEBUG
-#define log(args...) do { printf(args); } while (0);
+#define log(args...) do { tprintf(args); } while (0);
 #else
 #define log(args...)
 #endif
