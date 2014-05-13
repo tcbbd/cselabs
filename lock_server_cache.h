@@ -30,6 +30,7 @@ class lock_server_cache {
       std::queue<std::string> waiting_clients;
   };
   pthread_mutex_t initial_mutex;
+  pthread_mutex_t locks_insert_mutex;
   std::map<lock_protocol::lockid_t, pthread_mutex_t> lock_mutexes;
   std::map<lock_protocol::lockid_t, lockinfo_t *> locks;
  public:

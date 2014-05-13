@@ -28,8 +28,8 @@ lock_client_cache::lock_client_cache(std::string xdst,
   rlsrpc->reg(rlock_protocol::revoke, this, &lock_client_cache::revoke_handler);
   rlsrpc->reg(rlock_protocol::retry, this, &lock_client_cache::retry_handler);
 
-  initial_mutex = new pthread_mutex_t;
-  pthread_mutex_init(initial_mutex, NULL);
+  pthread_mutex_init(&initial_mutex, NULL);
+  pthread_mutex_init(&locks_insert_mutex, NULL);
 }
 
 lock_protocol::status
@@ -38,7 +38,7 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
     log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire begin\n",
             lid, id.data(), pthread_self());
     //lock's corresponding mutex hasn't been initialized
-    pthread_mutex_lock(initial_mutex);
+    pthread_mutex_lock(&initial_mutex);
     if (lock_mutexes.find(lid) == lock_mutexes.end()) {
         pthread_mutex_t mutex;
         pthread_mutex_init(&mutex, NULL);
@@ -46,7 +46,7 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
         pthread_cond_init(&cond, NULL);
         lock_mutexes[lid] = std::make_pair(mutex, cond);
     }
-    pthread_mutex_unlock(initial_mutex);
+    pthread_mutex_unlock(&initial_mutex);
 
     lock_protocol::status ret;
     bool acquire = false;
@@ -55,7 +55,10 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
         //know nothing about the lock, try to acquire through RPC
         log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
                 " state NOT EXIST -> NONE, do rpc call\n", lid, id.data(), pthread_self());
+        //insert into map will cause rebalance of RB Tree, so it should be locked
+        pthread_mutex_lock(&locks_insert_mutex);
         lock_states[lid] = NONE;
+        pthread_mutex_unlock(&locks_insert_mutex);
         acquire = true;
     }
     else {
@@ -228,6 +231,10 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
                 break;
             }
         }
+        else {
+            log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire,"
+                " acquire RPC call respond %d\n", lid, id.data(), pthread_self(), ret);
+        }
         pthread_mutex_unlock(&lock_mutexes[lid].first);
     }
     log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, acquire end\n",
@@ -276,6 +283,7 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
+        lu->dorelease(lid); //flush the cache if necessary
         log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
                 " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;
@@ -337,6 +345,7 @@ lock_client_cache::revoke_handler(lock_protocol::lockid_t lid,
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
+        lu->dorelease(lid); //flush the cache if necessary
         log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
                 " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;

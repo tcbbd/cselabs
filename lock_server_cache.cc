@@ -13,6 +13,7 @@
 lock_server_cache::lock_server_cache()
 {
     pthread_mutex_init(&initial_mutex, NULL);
+    pthread_mutex_init(&locks_insert_mutex, NULL);
 }
 
 
@@ -36,7 +37,10 @@ int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id,
     if (locks.find(lid) == locks.end()) {
         //it's the first time this lock required by some client
         log("Lock ID: %llu, Client ID: %s, acquire, response OK\n", lid, id.data());
+        //insert into map will cause rebalance of RB Tree, so it should be locked
+        pthread_mutex_lock(&locks_insert_mutex);
         locks[lid] = new lockinfo_t(ACQUIRED, id);
+        pthread_mutex_unlock(&locks_insert_mutex);
         ret = lock_protocol::OK;
     }
     else {

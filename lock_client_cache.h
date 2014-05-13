@@ -69,7 +69,8 @@ class lock_client_cache : public lock_client {
   enum lock_state_t { NONE, FREE, LOCKED, ACQUIRING, RELEASING, RELEASED,
       RETRIED, REVOKED, REVOKED_RETRIED,
       RELEASING_RETRYING, PRE_RELEASING_RETRYING, PRE_RELEASING };
-  pthread_mutex_t *initial_mutex;
+  pthread_mutex_t initial_mutex;
+  pthread_mutex_t locks_insert_mutex;
   std::map<lock_protocol::lockid_t, std::pair<pthread_mutex_t, pthread_cond_t> > lock_mutexes;
   std::map<int, lock_state_t> lock_states;
  public:
