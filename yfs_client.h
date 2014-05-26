@@ -5,6 +5,7 @@
 
 #include "lock_protocol.h"
 #include "lock_client.h"
+#include "lock_client_cache.h"
 
 //#include "yfs_protocol.h"
 #include "extent_client.h"
@@ -31,6 +32,7 @@ class yfs_client {
     unsigned long mtime;
     unsigned long ctime;
   };
+  typedef struct fileinfo symlinkinfo;
   struct dirent {
     std::string name;
     yfs_client::inum inum;
@@ -39,6 +41,10 @@ class yfs_client {
  private:
   static std::string filename(inum);
   static inum n2i(std::string);
+
+  int lookup_nonlock(inum, const char *, bool &, inum &);
+  int readdir_nonlock(inum, std::list<dirent> &);
+  int write_nonlock(inum, size_t, off_t, const char *, size_t &);
 
  public:
   yfs_client(std::string, std::string);
@@ -57,6 +63,12 @@ class yfs_client {
   int read(inum, size_t, off_t, std::string &);
   int unlink(inum,const char *);
   int mkdir(inum , const char *, mode_t , inum &);
+  
+  /** you may need to add symbolic link related methods here.*/
+  int symlink(inum, const char *, const char *, inum &);
+  int readlink(inum, std::string &);
+  bool issymlink(inum);
+  int getsymlink(inum, symlinkinfo &);
 };
 
 #endif 
