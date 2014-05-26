@@ -283,7 +283,7 @@ lock_client_cache::release(lock_protocol::lockid_t lid)
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
-        //lu->dorelease(lid); //flush the cache if necessary
+        lu->dorelease(lid); //flush the cache if necessary
         log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, release,"
                 " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;
@@ -345,7 +345,7 @@ lock_client_cache::revoke_handler(lock_protocol::lockid_t lid,
     }
     pthread_mutex_unlock(&lock_mutexes[lid].first);
     if (release) {
-        //lu->dorelease(lid); //flush the cache if necessary
+        lu->dorelease(lid); //flush the cache if necessary
         log("Lock ID: %llu, Client ID: %s, Client Thread: %lu, revoke,"
                 " release RPC call begin\n", lid, id.data(), pthread_self());
         int r;

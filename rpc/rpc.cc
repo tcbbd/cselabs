@@ -670,40 +670,64 @@ rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
     std::list<reply_t>::iterator it;
     rpcs::rpcstate_t ret = NEW;
 
-    //delete remembered requests with XIDs <= xid_rep
-    for (it = list.begin(); it != list.end(); ) {
-        if (it->xid <= xid_rep) {
-            //free(it->buf);
-            it = list.erase(it);
-        }
-        else
-            ++it;
-    }
+    VERIFY(xid > xid_rep);
 
-    bool found = false;
-    reply_t reply(xid);
-    unsigned int min_xid = list.empty() ? 0 : 0xFFFFFFFF;
-    for (it = list.begin(); it != list.end(); it++) {
-        if (it->xid < min_xid)
-            min_xid = it->xid;
-        if (it->xid == xid) {
-            found = true;
-            if (it->cb_present) {
-                ret = DONE;
-                *b = it->buf;
-                *sz = it->sz;
-            }
-            else
-                ret = INPROGRESS;
-        }
+    if (list.empty()) {
+        reply_t rep1(xid_rep);
+        reply_t rep2(xid);
+        list.push_back(rep1);
+        list.push_back(rep2);
     }
-
-    if (!found) {
-        if (xid < min_xid)
+    else {
+        if (list.front().xid > xid)
             ret = FORGOTTEN;
-        else
-            list.push_front(reply);
+        else {
+            //delete remembered requests with XIDS <= xid_rep
+            for (it = list.begin(); it != list.end();) {
+                if (it->xid <= xid_rep) {
+                    free(it->buf);
+                    it = list.erase(it);
+                }
+                else
+                    break;
+            }
+            if (list.empty()) {
+                reply_t rep(xid_rep);
+                list.push_back(rep);
+            }
+            else if (list.front().xid != xid_rep) {
+                reply_t rep(xid_rep);
+                list.push_front(rep);
+            }
+
+            if (list.back().xid < xid) {
+                reply_t rep(xid);
+                list.push_back(rep);
+                ret = NEW;
+            }
+            else {
+                for (it = list.begin(); it != list.end(); it++) {
+                    if (it->xid == xid) {
+                        if (it->cb_present) {
+                            *b = it->buf;
+                            *sz = it->sz;
+                            ret = DONE;
+                        }
+                        else
+                            ret = INPROGRESS;
+                        break;
+                    }
+                    else if (it->xid > xid) {
+                        reply_t rep(xid);
+                        list.insert(--it, rep);
+                        ret = NEW;
+                        break;
+                    }
+                }
+            }
+        }
     }
+
     return ret;
 }
 
@@ -724,7 +748,7 @@ rpcs::add_reply(unsigned int clt_nonce, unsigned int xid, char *b, int sz)
             it->cb_present = true;
             it->buf = b;
             it->sz = sz;
-            break;
+            return;
         }
     }
 }
