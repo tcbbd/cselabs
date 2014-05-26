@@ -23,7 +23,7 @@ lock_server::stat(int clt, lock_protocol::lockid_t lid, int &r)
 lock_protocol::status
 lock_server::acquire(int clt, lock_protocol::lockid_t lid, int &r)
 {
-  printf("LOCK SERVER ACQUIRE lock %d!!!!\n", lid);
+  printf("LOCK SERVER ACQUIRE lock %llu!!!!\n", lid);
   lock_protocol::status ret = lock_protocol::OK;
   if (mutexes.find(lid) == mutexes.end()) {
       pthread_mutex_t mutex;
@@ -52,7 +52,7 @@ lock_server::acquire(int clt, lock_protocol::lockid_t lid, int &r)
 lock_protocol::status
 lock_server::release(int clt, lock_protocol::lockid_t lid, int &r)
 {
-  printf("LOCK SERVER RELEASE lock %d!!!!\n", lid);
+  printf("LOCK SERVER RELEASE lock %llu!!!!\n", lid);
   lock_protocol::status ret = lock_protocol::OK;
   if (mutexes.find(lid) == mutexes.end() || lock_states.find(lid) == lock_states.end())
       return lock_protocol::RETRY;

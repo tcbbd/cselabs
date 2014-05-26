@@ -666,8 +666,45 @@ rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
 	
     ScopedLock rwl(&reply_window_m_);
 	
-    // Your lab7 code goes here
+    std::list<reply_t> &list = reply_window_[clt_nonce];
+    std::list<reply_t>::iterator it;
+    rpcs::rpcstate_t ret = NEW;
 
+    //delete remembered requests with XIDs <= xid_rep
+    for (it = list.begin(); it != list.end(); ) {
+        if (it->xid <= xid_rep) {
+            //free(it->buf);
+            it = list.erase(it);
+        }
+        else
+            ++it;
+    }
+
+    bool found = false;
+    reply_t reply(xid);
+    unsigned int min_xid = list.empty() ? 0 : 0xFFFFFFFF;
+    for (it = list.begin(); it != list.end(); it++) {
+        if (it->xid < min_xid)
+            min_xid = it->xid;
+        if (it->xid == xid) {
+            found = true;
+            if (it->cb_present) {
+                ret = DONE;
+                *b = it->buf;
+                *sz = it->sz;
+            }
+            else
+                ret = INPROGRESS;
+        }
+    }
+
+    if (!found) {
+        if (xid < min_xid)
+            ret = FORGOTTEN;
+        else
+            list.push_front(reply);
+    }
+    return ret;
 }
 
 // rpcs::dispatch calls add_reply when it is sending a reply to an RPC,
@@ -680,7 +717,16 @@ rpcs::add_reply(unsigned int clt_nonce, unsigned int xid, char *b, int sz)
 {
     ScopedLock rwl(&reply_window_m_);
 
-    // Your lab7 code goes here
+    std::list<reply_t> &list = reply_window_[clt_nonce];
+    std::list<reply_t>::iterator it;
+    for (it = list.begin(); it != list.end(); it++) {
+        if (it->xid == xid) {
+            it->cb_present = true;
+            it->buf = b;
+            it->sz = sz;
+            break;
+        }
+    }
 }
 
 void
@@ -773,8 +819,10 @@ operator<<(marshall &m, short x)
 marshall &
 operator<<(marshall &m, unsigned int x)
 {
-	// network order is big-endian
-        // lab7: write marshall code for unsigned int type here
+	m.rawbyte((x >> 24) & 0xff);
+	m.rawbyte((x >> 16) & 0xff);
+	m.rawbyte((x >> 8) & 0xff);
+	m.rawbyte(x & 0xff);
 	return m;
 }
 
@@ -892,7 +940,10 @@ operator>>(unmarshall &u, short &x)
 unmarshall &
 operator>>(unmarshall &u, unsigned int &x)
 {
-        // lab7: write marshall code for unsigned int type here
+	x = (u.rawbyte() & 0xff) << 24;
+	x |= (u.rawbyte() & 0xff) << 16;
+	x |= (u.rawbyte() & 0xff) << 8;
+	x |= u.rawbyte() & 0xff;
 	return u;
 }
 
